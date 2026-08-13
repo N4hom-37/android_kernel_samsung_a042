@@ -1,4 +1,4 @@
-name: Kernel Builder
+name: Kernel Builder v2
 
 on:
   workflow_dispatch:
@@ -29,9 +29,8 @@ jobs:
       CHAT_ID: ${{ secrets.CHAT_ID }}
       RDIR: ${{ github.workspace }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TC_DIR: ${{ github.workspace }}/../toolchains
 
-      # --- Toolchain config: change these URLs when updating toolchain versions ---
+      # --- Toolchain config ---
       GNU_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
       CLANG_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902.tar.gz
 
@@ -39,7 +38,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
 
       - name: Install Dependencies
         run: |
@@ -56,44 +55,59 @@ jobs:
         run: |
           GNU_TC_NAME=$(basename "${GNU_TC_URL}")
           GNU_TC_NAME="${GNU_TC_NAME%.tar.xz}"
-
           CLANG_TC_NAME=$(basename "${CLANG_TC_URL}")
           CLANG_TC_NAME="${CLANG_TC_NAME%.tar.gz}"
-
           echo "GNU_TC_NAME=${GNU_TC_NAME}" >> $GITHUB_ENV
           echo "CLANG_TC_NAME=${CLANG_TC_NAME}" >> $GITHUB_ENV
+          echo "TC_DIR=${RUNNER_TEMP}/toolchains" >> $GITHUB_ENV
 
       - name: Cache toolchains
         id: cache-toolchains
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.TC_DIR }}/${{ env.GNU_TC_NAME }}
             ${{ env.TC_DIR }}/${{ env.CLANG_TC_NAME }}
           key: toolchains-${{ env.GNU_TC_NAME }}-${{ env.CLANG_TC_NAME }}-v1
-
+    
       - name: Download toolchains (on cache miss)
         if: steps.cache-toolchains.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${TC_DIR}"
-
           curl -L -o /tmp/arm-gnu.tar.xz "${GNU_TC_URL}"
           tar -xf /tmp/arm-gnu.tar.xz -C "${TC_DIR}"
-
           curl -L -o /tmp/clang.tar.gz "${CLANG_TC_URL}"
           mkdir -p "${TC_DIR}/${CLANG_TC_NAME}"
           tar -xzf /tmp/clang.tar.gz -C "${TC_DIR}/${CLANG_TC_NAME}"
+        
+      - name: Save toolchains cache
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.TC_DIR }}/${{ env.GNU_TC_NAME }}
+            ${{ env.TC_DIR }}/${{ env.CLANG_TC_NAME }}
+          key: toolchains-${{ env.GNU_TC_NAME }}-${{ env.CLANG_TC_NAME }}-v1
+      
+      - name: Update Submodules
+        run: |
+          git submodule sync --recursive
+          git submodule foreach --recursive '
+            git remote set-branches origin "*"
+            git fetch --unshallow origin || git fetch origin
+          '
+          git submodule update --init --recursive --remote --merge
 
       - name: Build Kernel
         run: |
           mkdir -p "${RDIR}/out" "${RDIR}/build"
+          
           export BUILD_CROSS_COMPILE="${TC_DIR}/${GNU_TC_NAME}/bin/aarch64-none-linux-gnu-"
           export BUILD_CC="${TC_DIR}/${CLANG_TC_NAME}/bin/clang"
-
           export ARGS="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CROSS_COMPILE=${BUILD_CROSS_COMPILE} CC=${BUILD_CC} CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
-
+          
           start_time=$(date +%s)
-          make ${ARGS} a04e_defconfig custom.config
+          make ${ARGS} a04e_defconfig custom.config droidspaces.config
           make ${ARGS} || exit 1
           elapsed_time=$(d=$(( $(date +%s) - start_time )); printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
           echo "BUILDTIME=${elapsed_time}" >> $GITHUB_ENV
@@ -104,13 +118,15 @@ jobs:
           PATCHLEVEL=$(grep -E "^PATCHLEVEL =" Makefile | awk '{print $3}')
           SUBLEVEL=$(grep -E "^SUBLEVEL =" Makefile | awk '{print $3}')
           LOCALVERSION=$(grep "CONFIG_LOCALVERSION=" "out/.config" | cut -d'"' -f2)
-
           KVERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
-
+          
+          KSUVAR=$(basename "$(git -C "$(dirname "$(realpath "${RDIR}/drivers/kernelsu")")" config --get remote.origin.url)" | sed 's/\.git$//')
+          KSUVER="($(sed -n 's/.*-DKSU_VERSION=//p' "${RDIR}/drivers/kernelsu/Makefile" | tr -d '\r ' | xargs))"
+          
           IMGDIR="${RDIR}/out/arch/arm64/boot"
           IMGFILE="${IMGDIR}/Image"
           AK3_DIR="${IMGDIR}/AnyKernel3"
-          AK3_NAME="AnyKernel3-${KVERSION}"
+          AK3_NAME="AnyKernel3-${KVERSION}-${KSUVAR}${KSUVER}"
           AK3_FILE="${AK3_DIR}/${AK3_NAME}.zip"
 
           git clone --depth=1 https://github.com/N4hom-37/AnyKernel3.git "${AK3_DIR}"
@@ -121,6 +137,8 @@ jobs:
           echo "AK3_DIR=${AK3_DIR}" >> $GITHUB_ENV
           echo "AK3_NAME=${AK3_NAME}" >> $GITHUB_ENV
           echo "AK3_FILE=${AK3_FILE}" >> $GITHUB_ENV
+          echo "KSUVAR=${KSUVAR}" >> $GITHUB_ENV
+          echo "KSUVER=${KSUVER}" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -172,6 +190,7 @@ jobs:
               ". 📱 Device: Galaxy A04e" \
               ". 📦 Version: ${KVERSION}" \
               ". 🌿 Branch: ${GITHUB_REF_NAME:-${{ github.run_number }}}" \
+              ". ☯️ Ksu: ${KSUVAR} ${KSUVER}" \
               ". 👤 Author: ${KBUILD_BUILD_USER}" \
               ". 🕒 Build time: ${BUILDTIME}" \
               ". 📅 Date: $(date +"%Y-%m-%d %I:%M:%S %p")"
