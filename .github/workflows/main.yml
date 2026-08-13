@@ -1,0 +1,185 @@
+name: Kernel Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag'
+        required: true
+        default: 'v1.0.0'
+        type: string
+      publish_release:
+        description: 'Also upload to GitHub Releases'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      ARCH: arm64
+      KBUILD_BUILD_USER: "N4hom"
+      KBUILD_BUILD_HOST: "GitHub"
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHAT_ID: ${{ secrets.CHAT_ID }}
+      RDIR: ${{ github.workspace }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TC_DIR: ${{ github.workspace }}/../toolchains
+
+      # --- Toolchain config: change these URLs when updating toolchain versions ---
+      GNU_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+      CLANG_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902.tar.gz
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update || exit 1
+          sudo apt install -y git lld device-tree-compiler lz4 xz-utils zlib1g-dev \
+            openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full \
+            android-sdk-libsparse-utils erofs-utils default-jdk gnupg flex bison \
+            gperf build-essential zip curl libc6-dev libncurses-dev libx11-dev \
+            libreadline-dev libgl1 libgl1-mesa-dev make sudo bc grep tofrodos \
+            python3-markdown libxml2-utils xsltproc libtinfo5 libtinfo6 repo cpio kmod \
+            openssl libelf-dev pahole libssl-dev libarchive-tools zstd rsync || exit 1
+
+      - name: Derive toolchain names from URLs
+        run: |
+          GNU_TC_NAME=$(basename "${GNU_TC_URL}")
+          GNU_TC_NAME="${GNU_TC_NAME%.tar.xz}"
+
+          CLANG_TC_NAME=$(basename "${CLANG_TC_URL}")
+          CLANG_TC_NAME="${CLANG_TC_NAME%.tar.gz}"
+
+          echo "GNU_TC_NAME=${GNU_TC_NAME}" >> $GITHUB_ENV
+          echo "CLANG_TC_NAME=${CLANG_TC_NAME}" >> $GITHUB_ENV
+
+      - name: Cache toolchains
+        id: cache-toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TC_DIR }}/${{ env.GNU_TC_NAME }}
+            ${{ env.TC_DIR }}/${{ env.CLANG_TC_NAME }}
+          key: toolchains-${{ env.GNU_TC_NAME }}-${{ env.CLANG_TC_NAME }}-v1
+
+      - name: Download toolchains (on cache miss)
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${TC_DIR}"
+
+          curl -L -o /tmp/arm-gnu.tar.xz "${GNU_TC_URL}"
+          tar -xf /tmp/arm-gnu.tar.xz -C "${TC_DIR}"
+
+          curl -L -o /tmp/clang.tar.gz "${CLANG_TC_URL}"
+          mkdir -p "${TC_DIR}/${CLANG_TC_NAME}"
+          tar -xzf /tmp/clang.tar.gz -C "${TC_DIR}/${CLANG_TC_NAME}"
+
+      - name: Build Kernel
+        run: |
+          mkdir -p "${RDIR}/out" "${RDIR}/build"
+          export BUILD_CROSS_COMPILE="${TC_DIR}/${GNU_TC_NAME}/bin/aarch64-none-linux-gnu-"
+          export BUILD_CC="${TC_DIR}/${CLANG_TC_NAME}/bin/clang"
+
+          export ARGS="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CROSS_COMPILE=${BUILD_CROSS_COMPILE} CC=${BUILD_CC} CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
+
+          start_time=$(date +%s)
+          make ${ARGS} a04e_defconfig custom.config
+          make ${ARGS} || exit 1
+          elapsed_time=$(d=$(( $(date +%s) - start_time )); printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
+          echo "BUILDTIME=${elapsed_time}" >> $GITHUB_ENV
+
+      - name: Package with AnyKernel3
+        run: |
+          VERSION=$(grep -E "^VERSION =" Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep -E "^PATCHLEVEL =" Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep -E "^SUBLEVEL =" Makefile | awk '{print $3}')
+          LOCALVERSION=$(grep "CONFIG_LOCALVERSION=" "out/.config" | cut -d'"' -f2)
+
+          KVERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
+
+          IMGDIR="${RDIR}/out/arch/arm64/boot"
+          IMGFILE="${IMGDIR}/Image"
+          AK3_DIR="${IMGDIR}/AnyKernel3"
+          AK3_NAME="AnyKernel3-${KVERSION}"
+          AK3_FILE="${AK3_DIR}/${AK3_NAME}.zip"
+
+          git clone --depth=1 https://github.com/N4hom-37/AnyKernel3.git "${AK3_DIR}"
+          cp "${IMGFILE}" "${AK3_DIR}/Image"
+          (cd "${AK3_DIR}" && zip -r9 "${AK3_NAME}.zip" ./* -x ".*" "*/.*")
+
+          echo "KVERSION=${KVERSION}" >> $GITHUB_ENV
+          echo "AK3_DIR=${AK3_DIR}" >> $GITHUB_ENV
+          echo "AK3_NAME=${AK3_NAME}" >> $GITHUB_ENV
+          echo "AK3_FILE=${AK3_FILE}" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: ${{ env.AK3_NAME }}
+          path: |
+            ${{ env.AK3_DIR }}/**
+            !${{ env.AK3_DIR }}/**/.*
+            !${{ env.AK3_DIR }}/**/.*/**
+            !${{ env.AK3_DIR }}/AnyKernel3*.zip
+          compression-level: 9
+
+      - name: Publish to GitHub Release
+        if: github.event.inputs.publish_release == 'true'
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          ZIP_FILE="${AK3_FILE}"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "✘ Release: Zip file not found at $ZIP_FILE"
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ZIP_FILE" \
+              --repo "${{ github.repository }}" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" "$ZIP_FILE" \
+              --repo "${{ github.repository }}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes
+          fi
+
+      - name: Send to Telegram
+        continue-on-error: true
+        if: env.BOT_TOKEN != '' && env.CHAT_ID != ''
+        run: |
+          ZIP_FILE="${AK3_FILE}"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "✘ Telegram: Zip file not found"
+            exit 1
+          fi
+
+          DESC=$(printf '%s\n' \
+              "🛠️ New Kernel Build" \
+              "      ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾" \
+              ". 📱 Device: Galaxy A04e" \
+              ". 📦 Version: ${KVERSION}" \
+              ". 🌿 Branch: ${GITHUB_REF_NAME:-${{ github.run_number }}}" \
+              ". 👤 Author: ${KBUILD_BUILD_USER}" \
+              ". 🕒 Build time: ${BUILDTIME}" \
+              ". 📅 Date: $(date +"%Y-%m-%d %I:%M:%S %p")"
+          )
+
+          if curl -s -f -F document=@"$ZIP_FILE" -F caption="$DESC" \
+            "https://api.telegram.org/bot$BOT_TOKEN/sendDocument?chat_id=$CHAT_ID" > /dev/null; then
+            echo "✔ Telegram: Sent successfully."
+          else
+            echo "✘ Telegram: Failed to send."
+          fi
