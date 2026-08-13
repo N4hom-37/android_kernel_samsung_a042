@@ -2,3 +2,6 @@
 	path = NoMount
 	url = https://github.com/maxsteeel/nomount
 	branch = dev
+[submodule "KernelSU"]
+	path = KernelSU
+	url = https://github.com/backslashxx/KernelSU.git
