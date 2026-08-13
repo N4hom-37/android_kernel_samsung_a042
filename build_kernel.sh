@@ -51,6 +51,15 @@ download_toolchains() {
   fetch_toolchain "${CLANG_TC_URL}" "${TC_DIR}/${CLANG_TC_NAME}" /tmp/clang.tar.gz gz
 }
 
+update_submodules() {
+  git submodule sync --recursive
+  git submodule foreach --recursive '
+    git remote set-branches origin "*"
+    git fetch --unshallow origin || git fetch origin
+  '
+  git submodule update --init --recursive --remote --merge
+}
+
 build_kernel() {
   mkdir -p "${RDIR}/out" "${RDIR}/build"
   local cross="${TC_DIR}/${GNU_TC_NAME}/bin/aarch64-none-linux-gnu-"
@@ -58,7 +67,7 @@ build_kernel() {
   local args="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CROSS_COMPILE=${cross} CC=${cc} CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
 
   local t0=$(date +%s)
-  make ${args} a04e_defconfig custom.config
+  make ${args} a04e_defconfig custom.config droidspaces.config
   make ${args}
   local d=$(( $(date +%s) - t0 ))
   BUILDTIME=$(printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
@@ -71,9 +80,12 @@ package_anykernel3() {
   LOCALVERSION=$(grep "CONFIG_LOCALVERSION=" "out/.config" | cut -d'"' -f2)
   KVERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
 
+  KSUVAR=$(basename "$(git -C "$(dirname "$(realpath "${RDIR}/drivers/kernelsu")")" config --get remote.origin.url)" | sed 's/\.git$//')
+  KSUVER="($(sed -n 's/.*-DKSU_VERSION=//p' "${RDIR}/drivers/kernelsu/Makefile" | tr -d '\r ' | xargs))"
+
   IMGDIR="${RDIR}/out/arch/arm64/boot"
   AK3_DIR="${IMGDIR}/AnyKernel3"
-  AK3_NAME="AnyKernel3-${KVERSION}"
+  AK3_NAME="AnyKernel3-${KVERSION}-${KSUVAR}${KSUVER}"
   AK3_FILE="${AK3_DIR}/${AK3_NAME}.zip"
 
   git clone --depth=1 https://github.com/N4hom-37/AnyKernel3.git "${AK3_DIR}"
@@ -82,6 +94,7 @@ package_anykernel3() {
 
   echo "Build complete: ${AK3_FILE}"
   echo "Kernel version: ${KVERSION}"
+  echo "KernelSU: ${KSUVAR} ${KSUVER}"
   echo "Build time: ${BUILDTIME}"
 }
 
@@ -107,6 +120,7 @@ send_telegram() {
     ". 📱 Device: Galaxy A04e" \
     ". 📦 Version: ${KVERSION}" \
     ". 🌿 Branch: ${branch}" \
+    ". ☯️ Ksu: ${KSUVAR} ${KSUVER}" \
     ". 👤 Author: ${KBUILD_BUILD_USER}" \
     ". 🕒 Build time: ${BUILDTIME}" \
     ". 📅 Date: $(date +"%Y-%m-%d %I:%M:%S %p")")
@@ -123,6 +137,7 @@ main() {
   install_deps
   derive_toolchain_names
   download_toolchains
+  update_submodules
   build_kernel
   package_anykernel3
   publish_release
