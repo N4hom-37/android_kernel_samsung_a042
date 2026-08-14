@@ -37,8 +37,6 @@ jobs:
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Dependencies
         run: |
@@ -92,11 +90,7 @@ jobs:
       - name: Update Submodules
         run: |
           git submodule sync --recursive
-          git submodule foreach --recursive '
-            git remote set-branches origin "*"
-            git fetch --unshallow origin || git fetch origin
-          '
-          git submodule update --init --recursive --remote --merge
+          git submodule update --init --recursive --remote
 
       - name: Build Kernel
         run: |
