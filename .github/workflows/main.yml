@@ -1,4 +1,4 @@
-name: Kernel Builder v2
+name: Kernel Builder v3
 
 on:
   workflow_dispatch:
@@ -9,9 +9,14 @@ on:
         default: 'v1.0.0'
         type: string
       publish_release:
-        description: 'Also upload to GitHub Releases'
+        description: 'Publish release'
         required: true
         default: false
+        type: boolean
+      latest_submodules:
+        description: 'Update submodule'
+        required: true
+        default: true
         type: boolean
 
 permissions:
@@ -19,7 +24,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     env:
       ARCH: arm64
@@ -30,9 +35,7 @@ jobs:
       RDIR: ${{ github.workspace }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Toolchain config ---
-      GNU_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
-      CLANG_TC_URL: https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902.tar.gz
+      NEUTRON_CLANG_URL: https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/30072026/neutron-clang-30072026.tar.zst
 
     steps:
       - name: Checkout Kernel Source
@@ -41,64 +44,69 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt update || exit 1
-          sudo apt install -y git lld device-tree-compiler lz4 xz-utils zlib1g-dev \
-            openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full \
-            android-sdk-libsparse-utils erofs-utils default-jdk gnupg flex bison \
-            gperf build-essential zip curl libc6-dev libncurses-dev libx11-dev \
-            libreadline-dev libgl1 libgl1-mesa-dev make sudo bc grep tofrodos \
-            python3-markdown libxml2-utils xsltproc libtinfo5 libtinfo6 repo cpio kmod \
-            openssl libelf-dev pahole libssl-dev libarchive-tools zstd rsync || exit 1
+          sudo apt install -y \
+            device-tree-compiler zlib1g-dev bc cpio kmod \
+            libelf-dev pahole || exit 1
+
+          mkdir -p /tmp/libtinfo5
+          NCURSES_POOL="http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses"
+          LIBTINFO5_DEB=$(curl -fsL "${NCURSES_POOL}/" \
+            | grep -oP 'libtinfo5_[0-9][^"]*_amd64\.deb' \
+            | sort -V | tail -n1)
+          if [ -z "$LIBTINFO5_DEB" ]; then
+            echo "✘ Could not find a libtinfo5 amd64 build in ${NCURSES_POOL}"
+            exit 1
+          fi
+          curl -fL -o "/tmp/libtinfo5/${LIBTINFO5_DEB}" "${NCURSES_POOL}/${LIBTINFO5_DEB}" || exit 1
+          sudo apt install -y "/tmp/libtinfo5/${LIBTINFO5_DEB}" || exit 1
+          rm -rf /tmp/libtinfo5
 
       - name: Derive toolchain names from URLs
         run: |
-          GNU_TC_NAME=$(basename "${GNU_TC_URL}")
-          GNU_TC_NAME="${GNU_TC_NAME%.tar.xz}"
-          CLANG_TC_NAME=$(basename "${CLANG_TC_URL}")
-          CLANG_TC_NAME="${CLANG_TC_NAME%.tar.gz}"
-          echo "GNU_TC_NAME=${GNU_TC_NAME}" >> $GITHUB_ENV
-          echo "CLANG_TC_NAME=${CLANG_TC_NAME}" >> $GITHUB_ENV
+          NEUTRON_CLANG_NAME=$(basename "${NEUTRON_CLANG_URL}")
+          NEUTRON_CLANG_NAME="${NEUTRON_CLANG_NAME%.tar.zst}"
+          echo "NEUTRON_CLANG_NAME=${NEUTRON_CLANG_NAME}" >> $GITHUB_ENV
           echo "TC_DIR=${RUNNER_TEMP}/toolchains" >> $GITHUB_ENV
 
       - name: Cache toolchains
         id: cache-toolchains
         uses: actions/cache/restore@v4
         with:
-          path: |
-            ${{ env.TC_DIR }}/${{ env.GNU_TC_NAME }}
-            ${{ env.TC_DIR }}/${{ env.CLANG_TC_NAME }}
-          key: toolchains-${{ env.GNU_TC_NAME }}-${{ env.CLANG_TC_NAME }}-v1
+          path: ${{ env.TC_DIR }}/${{ env.NEUTRON_CLANG_NAME }}
+          key: toolchains-${{ env.NEUTRON_CLANG_NAME }}-aarch64
     
       - name: Download toolchains (on cache miss)
         if: steps.cache-toolchains.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "${TC_DIR}"
-          curl -L -o /tmp/arm-gnu.tar.xz "${GNU_TC_URL}"
-          tar -xf /tmp/arm-gnu.tar.xz -C "${TC_DIR}"
-          curl -L -o /tmp/clang.tar.gz "${CLANG_TC_URL}"
-          mkdir -p "${TC_DIR}/${CLANG_TC_NAME}"
-          tar -xzf /tmp/clang.tar.gz -C "${TC_DIR}/${CLANG_TC_NAME}"
+          mkdir -p "${TC_DIR}/${NEUTRON_CLANG_NAME}"
+          curl -L -o /tmp/neutron-clang.tar.zst "${NEUTRON_CLANG_URL}" || exit 1
+          tar -xf /tmp/neutron-clang.tar.zst -C "${TC_DIR}/${NEUTRON_CLANG_NAME}" || exit 1
+          rm /tmp/neutron-clang.tar.zst
         
       - name: Save toolchains cache
         if: steps.cache-toolchains.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: |
-            ${{ env.TC_DIR }}/${{ env.GNU_TC_NAME }}
-            ${{ env.TC_DIR }}/${{ env.CLANG_TC_NAME }}
-          key: toolchains-${{ env.GNU_TC_NAME }}-${{ env.CLANG_TC_NAME }}-v1
+          path: ${{ env.TC_DIR }}/${{ env.NEUTRON_CLANG_NAME }}
+          key: toolchains-${{ env.NEUTRON_CLANG_NAME }}-aarch64
       
       - name: Update Submodules
         run: |
           git submodule sync --recursive
-          git submodule update --init --recursive --remote
+          if [ "${{ github.event.inputs.latest_submodules }}" = "true" ]; then
+            echo "Fetching latest submodule commits (--remote)"
+            git submodule update --init --recursive --remote
+          else
+            echo "Fetching submodules pinned to recorded commits (detached HEAD)"
+            git submodule update --init --recursive
+          fi
 
       - name: Build Kernel
         run: |
           mkdir -p "${RDIR}/out" "${RDIR}/build"
           
-          export BUILD_CROSS_COMPILE="${TC_DIR}/${GNU_TC_NAME}/bin/aarch64-none-linux-gnu-"
-          export BUILD_CC="${TC_DIR}/${CLANG_TC_NAME}/bin/clang"
-          export ARGS="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CROSS_COMPILE=${BUILD_CROSS_COMPILE} CC=${BUILD_CC} CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
+          export PATH="${TC_DIR}/${NEUTRON_CLANG_NAME}/bin:$PATH"
+          export ARGS="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
           
           start_time=$(date +%s)
           make ${ARGS} a04e_defconfig custom.config droidspaces.config
@@ -135,6 +143,7 @@ jobs:
           echo "KSUVER=${KSUVER}" >> $GITHUB_ENV
 
       - name: Upload Artifact
+        if: github.event.inputs.publish_release != 'true'
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with:
@@ -187,6 +196,7 @@ jobs:
               ". ☯️ Ksu: ${KSUVAR} ${KSUVER}" \
               ". 👤 Author: ${KBUILD_BUILD_USER}" \
               ". 🕒 Build time: ${BUILDTIME}" \
+              ". 🔧 Toolchain: Neutron clang" \
               ". 📅 Date: $(date +"%Y-%m-%d %I:%M:%S %p")"
           )
 
