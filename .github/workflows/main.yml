@@ -106,6 +106,8 @@ jobs:
           mkdir -p "${RDIR}/out" "${RDIR}/build"
           
           export PATH="${TC_DIR}/${NEUTRON_CLANG_NAME}/bin:$PATH"
+          which clang llvm-ar llvm-objdump || { echo "✘ Neutron toolchain not found on PATH — check extraction step"; exit 1; }
+
           export ARGS="-C ${RDIR} O=${RDIR}/out -j$(nproc) ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y"
           
           start_time=$(date +%s)
@@ -113,6 +115,20 @@ jobs:
           make ${ARGS} || exit 1
           elapsed_time=$(d=$(( $(date +%s) - start_time )); printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
           echo "BUILDTIME=${elapsed_time}" >> $GITHUB_ENV
+
+      - name: Verify LTO
+        run: |
+          echo "== .config LTO settings =="
+          grep -E "CONFIG_LTO|CONFIG_THINLTO" out/.config || echo "no LTO config keys found"
+
+          echo "== ThinLTO cache dir =="
+          find out -iname "*thinlto*" -maxdepth 4 || echo "no thinlto cache found"
+
+          echo "== vmlinux.o (merged bitcode) =="
+          ls -la out/vmlinux.o 2>/dev/null || echo "vmlinux.o not found — LTO link stage may not have run"
+
+          echo "== sample object file type =="
+          file out/kernel/sched/core.o 2>/dev/null || echo "object not found (path may differ)"
 
       - name: Package with AnyKernel3
         run: |
