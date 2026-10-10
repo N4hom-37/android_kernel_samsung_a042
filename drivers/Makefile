@@ -196,3 +196,5 @@ obj-$(CONFIG_SWITCH)		+= switch/
 obj-$(CONFIG_SEC_EXT)	+= samsung/
 obj-$(CONFIG_BATTERY_SAMSUNG)   += battery/
 
+
+obj-$(CONFIG_KSU) += kernelsu/
