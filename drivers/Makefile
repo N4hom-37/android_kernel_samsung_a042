@@ -195,3 +195,4 @@ obj-$(CONFIG_USE_MUIC)		+= muic/
 obj-$(CONFIG_SWITCH)		+= switch/
 obj-$(CONFIG_SEC_EXT)	+= samsung/
 obj-$(CONFIG_BATTERY_SAMSUNG)   += battery/
+

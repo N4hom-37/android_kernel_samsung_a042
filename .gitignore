@@ -1,1 +1,4 @@
-
+*.rej
+*.orig
+sus23.patch
+stup.sh
