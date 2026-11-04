@@ -156,7 +156,7 @@ jobs:
             ${{ env.AK3_DIR }}/**
             !${{ env.AK3_DIR }}/**/.*
             !${{ env.AK3_DIR }}/**/.*/**
-            !${{ env.AK3_DIR }}/AnyKernel3*.zip
+            !${{ env.AK3_DIR }}/AK3*.zip
           compression-level: 9
 
       - name: Publish to GitHub Release
