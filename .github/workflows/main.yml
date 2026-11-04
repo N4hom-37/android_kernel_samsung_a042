@@ -1,4 +1,4 @@
-name: Kernel Builder v3
+name: Kernel Builder v4
 
 on:
   workflow_dispatch:
@@ -116,20 +116,6 @@ jobs:
           elapsed_time=$(d=$(( $(date +%s) - start_time )); printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
           echo "BUILDTIME=${elapsed_time}" >> $GITHUB_ENV
 
-      - name: Verify LTO
-        run: |
-          echo "== .config LTO settings =="
-          grep -E "CONFIG_LTO|CONFIG_THINLTO" out/.config || echo "no LTO config keys found"
-
-          echo "== ThinLTO cache dir =="
-          find out -iname "*thinlto*" -maxdepth 4 || echo "no thinlto cache found"
-
-          echo "== vmlinux.o (merged bitcode) =="
-          ls -la out/vmlinux.o 2>/dev/null || echo "vmlinux.o not found — LTO link stage may not have run"
-
-          echo "== sample object file type =="
-          file out/kernel/sched/core.o 2>/dev/null || echo "object not found (path may differ)"
-
       - name: Package with AnyKernel3
         run: |
           VERSION=$(grep -E "^VERSION =" Makefile | awk '{print $3}')
@@ -139,12 +125,13 @@ jobs:
           KVERSION="${VERSION}.${PATCHLEVEL}.${SUBLEVEL}${LOCALVERSION}"
           
           KSUVAR=$(basename "$(git -C "$(dirname "$(realpath "${RDIR}/drivers/kernelsu")")" config --get remote.origin.url)" | sed 's/\.git$//')
-          KSUVER="($(sed -n 's/.*-DKSU_VERSION=//p' "${RDIR}/drivers/kernelsu/Makefile" | tr -d '\r ' | xargs))"
+          KSUVER="$(sed -n 's/.*-DKSU_VERSION=//p' "${RDIR}/drivers/kernelsu/Makefile" | tr -d '\r ' | xargs)"
+          SUSFSVER=$(sed -n 's/^#define SUSFS_VERSION "\(.*\)"/\1/p' include/linux/susfs.h)
           
           IMGDIR="${RDIR}/out/arch/arm64/boot"
           IMGFILE="${IMGDIR}/Image"
           AK3_DIR="${IMGDIR}/AnyKernel3"
-          AK3_NAME="AnyKernel3-${KVERSION}-${KSUVAR}${KSUVER}"
+          AK3_NAME="AK3-${KVERSION}-${KSUVAR}_${KSUVER}-SusFS_${SUSFSVER}"
           AK3_FILE="${AK3_DIR}/${AK3_NAME}.zip"
 
           git clone --depth=1 https://github.com/N4hom-37/AnyKernel3.git "${AK3_DIR}"
@@ -157,6 +144,7 @@ jobs:
           echo "AK3_FILE=${AK3_FILE}" >> $GITHUB_ENV
           echo "KSUVAR=${KSUVAR}" >> $GITHUB_ENV
           echo "KSUVER=${KSUVER}" >> $GITHUB_ENV
+          echo "SUSFSVER=${SUSFSVER}" >> $GITHUB_ENV
 
       - name: Upload Artifact
         if: github.event.inputs.publish_release != 'true'
@@ -210,6 +198,7 @@ jobs:
               ". 📦 Version: ${KVERSION}" \
               ". 🌿 Branch: ${GITHUB_REF_NAME:-${{ github.run_number }}}" \
               ". ☯️ Ksu: ${KSUVAR} ${KSUVER}" \
+              ".  ඞ SusFS: ${SUSFSVER}" \
               ". 👤 Author: ${KBUILD_BUILD_USER}" \
               ". 🕒 Build time: ${BUILDTIME}" \
               ". 🔧 Toolchain: Neutron clang" \
