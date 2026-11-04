@@ -4,8 +4,8 @@
 	branch = dev
 [submodule "KernelSU"]
 	path = KernelSU
-	url = https://github.com/backslashxx/KernelSU.git
-	branch = master
+	url = https://github.com/N4hom-37/KernelSU
+	branch = susfs
 [submodule "Baseband-guard"]
 	path = Baseband-guard
 	url = https://github.com/vc-teahouse/Baseband-guard.git
