@@ -1,4 +1,4 @@
-name: Kernel Builder v3
+name: Kernel Builder v4
 
 on:
   workflow_dispatch:
@@ -115,20 +115,6 @@ jobs:
           make ${ARGS} || exit 1
           elapsed_time=$(d=$(( $(date +%s) - start_time )); printf "%02d:%02d:%02d" $((d/3600)) $((d%3600/60)) $((d%60)))
           echo "BUILDTIME=${elapsed_time}" >> $GITHUB_ENV
-
-      - name: Verify LTO
-        run: |
-          echo "== .config LTO settings =="
-          grep -E "CONFIG_LTO|CONFIG_THINLTO" out/.config || echo "no LTO config keys found"
-
-          echo "== ThinLTO cache dir =="
-          find out -iname "*thinlto*" -maxdepth 4 || echo "no thinlto cache found"
-
-          echo "== vmlinux.o (merged bitcode) =="
-          ls -la out/vmlinux.o 2>/dev/null || echo "vmlinux.o not found — LTO link stage may not have run"
-
-          echo "== sample object file type =="
-          file out/kernel/sched/core.o 2>/dev/null || echo "object not found (path may differ)"
 
       - name: Package with AnyKernel3
         run: |
